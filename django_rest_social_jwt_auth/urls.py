@@ -1,6 +1,8 @@
 from django.urls import path
-from .views import signin_facebook, fb_callback, signin_github, gh_callback, signin_google, goo_callback, social_logout,\
-    google_refresh, github_refresh
+
+from .views import (fb_callback, gh_callback, github_refresh, goo_callback,
+                    google_refresh, signin_facebook, signin_github,
+                    signin_google, social_logout)
 
 urlpatterns = [
     path('facebook/', signin_facebook, name='facebook_login'),

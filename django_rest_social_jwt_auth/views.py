@@ -1,33 +1,43 @@
+import json
+from datetime import datetime, timedelta
+
+import jwt
+import requests
 from django.conf import settings
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, login, logout
+from django.contrib.auth.hashers import make_password
+from django.http.response import JsonResponse
 from django.shortcuts import redirect
 from django.urls import reverse
-from django.contrib.auth.hashers import make_password
 from requests_oauthlib import OAuth2Session
 from requests_oauthlib.compliance_fixes import facebook_compliance_fix
+
 from .models import SocialUser
-from datetime import datetime, timedelta
-import json
-import jwt
-from django.contrib.auth import login, logout
-from django.http.response import JsonResponse
-import requests
 
 
 def create_jwt(user):
     token = jwt.encode({
         'role': settings.JWT_ROLE,
         'userid': str(user.id),
-        'exp': (datetime.now() + timedelta(minutes=settings.JWT_EXP)).timestamp(),
+        'exp': int((datetime.now() + timedelta(minutes=settings.JWT_EXP)).timestamp()),
     }, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
     return {'token': token}
 
 def user_busines(social_data: dict, social_organisation):
-    social_user_id = social_data.get('id')
+    try:
+        social_user_id = social_data['id']
+    except KeyError:
+        raise AttributeError(f"No {social_organisation}'s user ID")
+
     social_user = SocialUser.objects.filter(social_id=social_user_id, social_organisation=social_organisation).first()
-    social_data = social_data.get('token')
+
+    social_data = social_data['token']
     social_refresh_token = social_data.get('refresh_token', '')
-    social_token = social_data['access_token']
+    try:
+        social_token = social_data['access_token']
+    except KeyError:
+        raise AttributeError('No access token provided')
+
     if not social_user:
         social_user_name = social_data.get('name') or social_data.get('login')
         social_user_password = make_password(password=None)
@@ -40,14 +50,13 @@ def user_busines(social_data: dict, social_organisation):
     else:
         social_user.token = social_token
         social_user.refresh_token = social_refresh_token
-        social_user.save()
+        social_user.save(update_fields=['token', 'refresh_token'])
         social_user = social_user.user
     return social_user
 
 def updating_token(user, token):
     user.socialuser.token = token
-    user.socialuser.save()
-    return True
+    user.socialuser.save(update_fields=['token'])
 
 def is_auth_social(request):
     user = request.user
@@ -68,7 +77,7 @@ def social_logout(request):
         except KeyError:
             pass
         user.socialuser.token = ''
-        user.socialuser.save()
+        user.socialuser.save(update_fields=['token'])
     return redirect(settings.LOGOUT_URL)
 
 def get_token(request=None, user=None):
@@ -99,6 +108,20 @@ def get_refresh_token(request=None, user=None):
     return JsonResponse({'refresh_token': ''}, status=404)
 
 
+def common_login_deal(request, response, token, provider):
+    if not token:
+        return JsonResponse({'status': 'No token info'}, status=400)
+    response['token'] = token
+    try:
+        user = user_busines(response, provider)
+    except AttributeError as ae:
+        return JsonResponse({'status': ae.args[0]}, status=400)
+    user_jwt = create_jwt(user)
+    login(request, user)
+    request.session['jwt'] = json.dumps(user_jwt)
+    return redirect(settings.AUTHED_URL)
+
+
 def signin_facebook(request):
     client_id = settings.FB_CLIENT_ID
     redirect_uri = request.build_absolute_uri(reverse(fb_callback))
@@ -119,12 +142,7 @@ def fb_callback(request):
     fb = OAuth2Session(client_id, redirect_uri=redirect_uri)
     token = fb.fetch_token(token_url, client_secret=client_secret, authorization_response=request.build_absolute_uri())
     response = fb.get('https://graph.facebook.com/me?').json()
-    response['token'] = token
-    user = user_busines(response, 'facebook')
-    user_jwt = create_jwt(user)
-    login(request, user)
-    request.session['jwt'] = json.dumps(user_jwt)
-    return redirect(settings.AUTHED_URL)
+    return common_login_deal(request, response, token, 'facebook')
 
 
 def signin_github(request):
@@ -147,13 +165,7 @@ def gh_callback(request):
     gh = OAuth2Session(client_id, redirect_uri=redirect_uri)
     token = gh.fetch_token(token_url, client_secret=client_secret, authorization_response=request.build_absolute_uri())
     response = gh.get('https://api.github.com/user').json()
-    response['token'] = token
-    print(response)
-    user = user_busines(response, 'github')
-    user_jwt = create_jwt(user)
-    login(request, user)
-    request.session['jwt'] = json.dumps(user_jwt)
-    return redirect(settings.AUTHED_URL)
+    return common_login_deal(request, response, token, 'github')
 
 def github_refresh(request=None, user=None):
     if request:
@@ -170,7 +182,10 @@ def github_refresh(request=None, user=None):
         response = requests.post(token_url, params={'grant_type': 'refresh_token'}, data={
             'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token
         }).json()
-        updating_token(user, token=response['access_token'])
+        try:
+            updating_token(user, token=response['access_token'])
+        except KeyError:
+            return JsonResponse({'status': 'No access token provided'}, status=400)
         return JsonResponse({'status': 'refreshed'}, status=200)
     return JsonResponse({'status': ''}, status=404)
 
@@ -198,12 +213,7 @@ def goo_callback(request):
     goo = OAuth2Session(client_id, redirect_uri=redirect_uri)
     token = goo.fetch_token(token_url, client_secret=client_secret, authorization_response=request.build_absolute_uri())
     response = goo.get('https://www.googleapis.com/oauth2/v1/userinfo').json()
-    response['token'] = token
-    user = user_busines(response, 'google')
-    user_jwt = create_jwt(user)
-    login(request, user)
-    request.session['jwt'] = json.dumps(user_jwt)
-    return redirect(settings.AUTHED_URL)
+    return common_login_deal(request, response, token, 'google')
 
 def google_refresh(request=None, user=None):
     if request:
@@ -220,6 +230,9 @@ def google_refresh(request=None, user=None):
         response = requests.post(token_url, params={'grant_type': 'refresh_token'}, data={
             'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token
         }).json()
-        updating_token(user, token=response['access_token'])
+        try:
+            updating_token(user, token=response['access_token'])
+        except KeyError:
+            return JsonResponse({'status': 'No access token provided'}, status=400)
         return JsonResponse({'status': 'refreshed'}, status=200)
     return JsonResponse({'status': ''}, status=404)
