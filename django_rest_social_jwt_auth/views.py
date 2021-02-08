@@ -50,13 +50,13 @@ def user_busines(social_data: dict, social_organisation):
     else:
         social_user.token = social_token
         social_user.refresh_token = social_refresh_token
-        social_user.save(update_fields=['token', 'refresh_token'])
+        social_user.save(update_fields=('token', 'refresh_token'))
         social_user = social_user.user
     return social_user
 
 def updating_token(user, token):
     user.socialuser.token = token
-    user.socialuser.save(update_fields=['token'])
+    user.socialuser.save(update_fields=('token',))
 
 def is_auth_social(request):
     user = request.user
@@ -77,7 +77,7 @@ def social_logout(request):
         except KeyError:
             pass
         user.socialuser.token = ''
-        user.socialuser.save(update_fields=['token'])
+        user.socialuser.save(update_fields=('token',))
     return redirect(settings.LOGOUT_URL)
 
 def get_token(request=None, user=None):
